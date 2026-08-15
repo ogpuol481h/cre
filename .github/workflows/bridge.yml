@@ -1,0 +1,78 @@
+name: VM Bridge
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'jobs/**'
+      - 'scripts/bridge_runner.py'
+      - '.github/workflows/bridge.yml'
+  workflow_dispatch:
+    inputs:
+      job:
+        description: 'Path to job JSON under jobs/'
+        required: false
+        default: 'jobs/request-smoke-http.json'
+
+permissions:
+  contents: read
+
+jobs:
+  bridge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Select job
+        id: select
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            JOB='${{ inputs.job }}'
+          else
+            JOB='jobs/request-smoke-http.json'
+          fi
+          case "$JOB" in
+            jobs/*.json) ;;
+            *) echo 'Job must be a JSON file under jobs/' >&2; exit 2 ;;
+          esac
+          test -f "$JOB"
+          echo "job=$JOB" >> "$GITHUB_OUTPUT"
+
+      - name: Run bridge job
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: python scripts/bridge_runner.py '${{ steps.select.outputs.job }}'
+
+      - name: Add metadata
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p bridge-output
+          cat > bridge-output/bridge-meta.json <<EOF
+          {
+            "repository": "${GITHUB_REPOSITORY}",
+            "run_id": "${GITHUB_RUN_ID}",
+            "run_attempt": "${GITHUB_RUN_ATTEMPT}",
+            "sha": "${GITHUB_SHA}",
+            "job": "${{ steps.select.outputs.job }}"
+          }
+          EOF
+
+      - name: Upload result artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vm-bridge-${{ github.run_id }}
+          path: bridge-output/
+          if-no-files-found: error
+          retention-days: 7
